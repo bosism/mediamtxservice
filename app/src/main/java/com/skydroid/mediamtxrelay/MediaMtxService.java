@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -29,10 +30,10 @@ public final class MediaMtxService extends Service {
     public static final String EXTRA_RTSP_PORT = "rtsp_port";
     public static final String EXTRA_SOURCE_URL = "source_url";
     public static final String EXTRA_TCP_ONLY = "tcp_only";
+    public static final String EXTRA_CONFIG_YAML = "config_yaml";
 
     private static final String CHANNEL_ID = "mediamtx_relay";
     private static final int NOTIFICATION_ID = 7104;
-    private static final int DEFAULT_RTSP_PORT = 8554;
     private static final int MAX_FAST_FAILURES = 5;
     private static final long FAST_FAILURE_WINDOW_MS = 30_000L;
     private static final long LOG_MAX_BYTES = 512L * 1024L;
@@ -61,7 +62,8 @@ public final class MediaMtxService extends Service {
             return START_NOT_STICKY;
         }
 
-        RelayConfig config = RelayConfig.fromIntent(intent);
+        RelayConfig config = RelayConfig.fromIntent(this, intent);
+        RelaySettings.saveConfigYaml(this, config.yaml);
         startInForeground(getString(R.string.notification_starting), config.rtspPort);
 
         if (ACTION_RESTART.equals(action) || !currentConfig.sameAs(config)) {
@@ -206,43 +208,10 @@ public final class MediaMtxService extends Service {
 
     private File writeConfig(RelayConfig config) throws IOException {
         File file = new File(getFilesDir(), "mediamtx.yml");
-        String yaml = buildConfig(config);
         try (FileOutputStream stream = new FileOutputStream(file, false)) {
-            stream.write(yaml.getBytes(StandardCharsets.UTF_8));
+            stream.write(config.yaml.getBytes(StandardCharsets.UTF_8));
         }
         return file;
-    }
-
-    private String buildConfig(RelayConfig config) {
-        String transports = config.tcpOnly ? "[tcp]" : "[udp, multicast, tcp]";
-        StringBuilder builder = new StringBuilder();
-        builder.append("logLevel: info\n");
-        builder.append("logDestinations: [stdout]\n");
-        builder.append("api: false\n");
-        builder.append("metrics: false\n");
-        builder.append("pprof: false\n");
-        builder.append("playback: false\n");
-        builder.append("rtsp: true\n");
-        builder.append("rtspTransports: ").append(transports).append('\n');
-        builder.append("rtspAddress: :").append(config.rtspPort).append('\n');
-        builder.append("rtmp: false\n");
-        builder.append("hls: false\n");
-        builder.append("webrtc: false\n");
-        builder.append("srt: false\n");
-        builder.append("moq: false\n");
-        builder.append("paths:\n");
-        if (config.sourceUrl != null && !config.sourceUrl.isEmpty()) {
-            builder.append("  relay:\n");
-            builder.append("    source: ").append(yamlQuote(config.sourceUrl)).append('\n');
-            builder.append("    rtspTransport: tcp\n");
-            builder.append("    sourceOnDemand: false\n");
-        }
-        builder.append("  all_others:\n");
-        return builder.toString();
-    }
-
-    private static String yamlQuote(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private void appendLog(String message) {
@@ -290,7 +259,6 @@ public final class MediaMtxService extends Service {
                 this, 1, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         Intent restartIntent = new Intent(this, MediaMtxService.class).setAction(ACTION_RESTART);
-        restartIntent.putExtra(EXTRA_RTSP_PORT, rtspPort);
         PendingIntent restartPendingIntent = PendingIntent.getService(
                 this, 2, restartIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
@@ -324,60 +292,54 @@ public final class MediaMtxService extends Service {
     }
 
     private static final class RelayConfig {
+        final String yaml;
         final int rtspPort;
-        final String sourceUrl;
-        final boolean tcpOnly;
 
-        RelayConfig(int rtspPort, String sourceUrl, boolean tcpOnly) {
+        RelayConfig(String yaml) {
+            this.yaml = RelaySettings.sanitizeConfigYaml(yaml);
+            this.rtspPort = RelaySettings.detectRtspPort(this.yaml);
+        }
+
+        RelayConfig(String yaml, int rtspPort) {
+            this.yaml = RelaySettings.sanitizeConfigYaml(yaml);
             this.rtspPort = rtspPort;
-            this.sourceUrl = sourceUrl;
-            this.tcpOnly = tcpOnly;
         }
 
         static RelayConfig defaults() {
-            return new RelayConfig(DEFAULT_RTSP_PORT, null, true);
+            return new RelayConfig(RelaySettings.defaultConfig(), RelaySettings.DEFAULT_RTSP_PORT);
         }
 
         boolean sameAs(RelayConfig other) {
             if (other == null) {
                 return false;
             }
-            if (rtspPort != other.rtspPort || tcpOnly != other.tcpOnly) {
-                return false;
-            }
-            if (sourceUrl == null) {
-                return other.sourceUrl == null;
-            }
-            return sourceUrl.equals(other.sourceUrl);
+            return yaml.equals(other.yaml);
         }
 
-        static RelayConfig fromIntent(Intent intent) {
-            int rtspPort = DEFAULT_RTSP_PORT;
-            String sourceUrl = null;
-            boolean tcpOnly = true;
-
+        static RelayConfig fromIntent(Context context, Intent intent) {
             if (intent != null) {
-                rtspPort = intent.getIntExtra(EXTRA_RTSP_PORT, DEFAULT_RTSP_PORT);
-                sourceUrl = sanitizeSourceUrl(intent.getStringExtra(EXTRA_SOURCE_URL));
-                tcpOnly = intent.getBooleanExtra(EXTRA_TCP_ONLY, true);
+                String yaml = intent.getStringExtra(EXTRA_CONFIG_YAML);
+                if (yaml != null) {
+                    return new RelayConfig(yaml);
+                }
+
+                int rtspPort = RelaySettings.readRtspPort(context);
+                String sourceUrl = RelaySettings.readSourceUrl(context);
+                boolean tcpOnly = RelaySettings.readTcpOnly(context);
+                rtspPort = intent.getIntExtra(EXTRA_RTSP_PORT, rtspPort);
+                if (intent.hasExtra(EXTRA_SOURCE_URL)) {
+                    sourceUrl = RelaySettings.sanitizeSourceUrl(intent.getStringExtra(EXTRA_SOURCE_URL));
+                }
+                tcpOnly = intent.getBooleanExtra(EXTRA_TCP_ONLY, tcpOnly);
+                if (intent.hasExtra(EXTRA_RTSP_PORT)
+                        || intent.hasExtra(EXTRA_SOURCE_URL)
+                        || intent.hasExtra(EXTRA_TCP_ONLY)) {
+                    String generatedYaml = RelaySettings.defaultConfig(rtspPort, sourceUrl, tcpOnly);
+                    return new RelayConfig(generatedYaml, RelaySettings.sanitizePort(rtspPort));
+                }
             }
 
-            if (rtspPort < 1024 || rtspPort > 65535) {
-                rtspPort = DEFAULT_RTSP_PORT;
-            }
-
-            return new RelayConfig(rtspPort, sourceUrl, tcpOnly);
-        }
-
-        private static String sanitizeSourceUrl(String value) {
-            if (value == null) {
-                return null;
-            }
-            String trimmed = value.trim();
-            if (trimmed.isEmpty() || trimmed.contains("\n") || trimmed.contains("\r")) {
-                return null;
-            }
-            return trimmed;
+            return new RelayConfig(RelaySettings.readConfigYaml(context));
         }
     }
 }

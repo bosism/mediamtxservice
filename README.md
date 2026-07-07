@@ -2,7 +2,7 @@
 
 Minimal Android foreground-service APK that runs MediaMTX on the controller without Termux.
 
-The app has no real UI. Opening the launcher icon starts the foreground service and then closes the activity. ADB can also start, stop, and configure the service.
+Opening the launcher icon shows a small settings screen with an editable `mediamtx.yml`, start/stop buttons, and a log preview. ADB can also start, stop, and configure the service.
 
 ## Build
 
@@ -25,35 +25,56 @@ adb shell pm grant com.skydroid.mediamtxrelay.dev android.permission.POST_NOTIFI
 
 ## Start
 
-Default RTSP port is `8554`:
+Use the launcher settings screen, edit `mediamtx.yml`, then press `Start / Restart`. The default YAML is intentionally short:
 
-```bash
-adb shell am start -n com.skydroid.mediamtxrelay.dev/com.skydroid.mediamtxrelay.MainActivity
+```yaml
+paths:
+  cam:
+    source: rtsp://192.168.144.25:8554/main.264
+    sourceOnDemand: yes
+    rtspTransport: tcp
 ```
 
-Use another port while Termux is still occupying `8554`:
+ADB can start with the saved YAML:
 
 ```bash
 adb shell am start \
   -n com.skydroid.mediamtxrelay.dev/com.skydroid.mediamtxrelay.MainActivity \
+  --es command start
+```
+
+ADB can still generate simple YAML from extras. Use another port while Termux is still occupying `8554`:
+
+```bash
+adb shell am start \
+  -n com.skydroid.mediamtxrelay.dev/com.skydroid.mediamtxrelay.MainActivity \
+  --es command start \
   --ei rtsp_port 18554
 ```
 
-Pull an upstream RTSP camera/source and expose it as `/relay`:
+Pull an upstream RTSP camera/source and expose it as `/cam`:
 
 ```bash
 adb shell am start \
   -n com.skydroid.mediamtxrelay.dev/com.skydroid.mediamtxrelay.MainActivity \
+  --es command start \
   --es source_url 'rtsp://192.168.68.10:8554/camera'
 ```
 
 Then read from:
 
 ```text
-rtsp://<android-device-ip>:8554/relay
+rtsp://<android-device-ip>:8554/cam
 ```
 
-If no `source_url` is provided, MediaMTX accepts publisher clients on any path and relays them to readers.
+Pass a complete YAML config directly:
+
+```bash
+adb shell am start \
+  -n com.skydroid.mediamtxrelay.dev/com.skydroid.mediamtxrelay.MainActivity \
+  --es command start \
+  --es config_yaml "$(cat mediamtx.yml)"
+```
 
 ## Stop
 
@@ -71,7 +92,7 @@ For the debug build:
 adb shell run-as com.skydroid.mediamtxrelay.dev cat files/mediamtx-service.log
 ```
 
-The generated MediaMTX config is:
+The active MediaMTX config is:
 
 ```bash
 adb shell run-as com.skydroid.mediamtxrelay.dev cat files/mediamtx.yml
