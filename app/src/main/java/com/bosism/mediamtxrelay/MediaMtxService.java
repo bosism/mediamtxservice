@@ -1,11 +1,9 @@
-package com.skydroid.mediamtxrelay;
+package com.bosism.mediamtxrelay;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -23,14 +21,8 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 public final class MediaMtxService extends Service {
-    public static final String ACTION_START = "com.skydroid.mediamtxrelay.START";
-    public static final String ACTION_STOP = "com.skydroid.mediamtxrelay.STOP";
-    public static final String ACTION_RESTART = "com.skydroid.mediamtxrelay.RESTART";
-
-    public static final String EXTRA_RTSP_PORT = "rtsp_port";
-    public static final String EXTRA_SOURCE_URL = "source_url";
-    public static final String EXTRA_TCP_ONLY = "tcp_only";
-    public static final String EXTRA_CONFIG_YAML = "config_yaml";
+    public static final String ACTION_START = "com.bosism.mediamtxrelay.START";
+    public static final String ACTION_STOP = "com.bosism.mediamtxrelay.STOP";
 
     private static final String CHANNEL_ID = "mediamtx_relay";
     private static final int NOTIFICATION_ID = 7104;
@@ -57,16 +49,17 @@ public final class MediaMtxService extends Service {
 
         if (ACTION_STOP.equals(action)) {
             stopRelay();
-            stopForeground(true);
+            RelaySettings.setRunning(this, false);
+            stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
 
-        RelayConfig config = RelayConfig.fromIntent(this, intent);
+        RelayConfig config = new RelayConfig(RelaySettings.readConfigYaml(this));
         RelaySettings.saveConfigYaml(this, config.yaml);
-        startInForeground(getString(R.string.notification_starting), config.rtspPort);
+        startInForeground(getString(R.string.notification_starting));
 
-        if (ACTION_RESTART.equals(action) || !currentConfig.sameAs(config)) {
+        if (!currentConfig.sameAs(config)) {
             stopRelay();
         }
 
@@ -79,6 +72,7 @@ public final class MediaMtxService extends Service {
     @Override
     public void onDestroy() {
         stopRelay();
+        RelaySettings.setRunning(this, false);
         super.onDestroy();
     }
 
@@ -90,7 +84,7 @@ public final class MediaMtxService extends Service {
     private void startRelay(RelayConfig config) {
         synchronized (lock) {
             if (process != null && process.isAlive()) {
-                updateNotification(getString(R.string.notification_running, config.rtspPort), config.rtspPort);
+                updateNotification(getString(R.string.notification_running));
                 return;
             }
 
@@ -112,10 +106,12 @@ public final class MediaMtxService extends Service {
                 supervisorThread.setDaemon(true);
                 supervisorThread.start();
 
-                updateNotification(getString(R.string.notification_running, config.rtspPort), config.rtspPort);
+                RelaySettings.setRunning(this, true);
+                updateNotification(getString(R.string.notification_running));
             } catch (IOException e) {
                 appendLog("start failed: " + e);
-                updateNotification("Start failed: " + e.getMessage(), config.rtspPort);
+                RelaySettings.setRunning(this, false);
+                updateNotification("Start failed: " + e.getMessage());
                 stopSelf();
             }
         }
@@ -151,7 +147,8 @@ public final class MediaMtxService extends Service {
 
         if (fastFailures > MAX_FAST_FAILURES) {
             appendLog("giving up after repeated fast failures");
-            updateNotification(getString(R.string.notification_failed), currentConfig.rtspPort);
+            RelaySettings.setRunning(this, false);
+            updateNotification(getString(R.string.notification_failed));
             stopSelf();
             return;
         }
@@ -236,8 +233,8 @@ public final class MediaMtxService extends Service {
         }
     }
 
-    private void startInForeground(String text, int rtspPort) {
-        Notification notification = buildNotification(text, rtspPort);
+    private void startInForeground(String text) {
+        Notification notification = buildNotification(text);
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
                     NOTIFICATION_ID,
@@ -248,23 +245,13 @@ public final class MediaMtxService extends Service {
         }
     }
 
-    private void updateNotification(String text, int rtspPort) {
+    private void updateNotification(String text) {
         NotificationManager manager = getSystemService(NotificationManager.class);
-        manager.notify(NOTIFICATION_ID, buildNotification(text, rtspPort));
+        manager.notify(NOTIFICATION_ID, buildNotification(text));
     }
 
-    private Notification buildNotification(String text, int rtspPort) {
-        Intent stopIntent = new Intent(this, MediaMtxService.class).setAction(ACTION_STOP);
-        PendingIntent stopPendingIntent = PendingIntent.getService(
-                this, 1, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        Intent restartIntent = new Intent(this, MediaMtxService.class).setAction(ACTION_RESTART);
-        PendingIntent restartPendingIntent = PendingIntent.getService(
-                this, 2, restartIntent, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
+    private Notification buildNotification(String text) {
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID);
 
         return builder
                 .setContentTitle(getString(R.string.notification_title))
@@ -272,16 +259,10 @@ public final class MediaMtxService extends Service {
                 .setSmallIcon(R.drawable.ic_stat_relay)
                 .setOngoing(true)
                 .setShowWhen(false)
-                .addAction(R.drawable.ic_stat_relay, getString(R.string.notification_action_restart), restartPendingIntent)
-                .addAction(R.drawable.ic_stat_relay, getString(R.string.notification_action_stop), stopPendingIntent)
                 .build();
     }
 
     private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return;
-        }
-
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.notification_channel_name),
@@ -293,20 +274,13 @@ public final class MediaMtxService extends Service {
 
     private static final class RelayConfig {
         final String yaml;
-        final int rtspPort;
 
         RelayConfig(String yaml) {
             this.yaml = RelaySettings.sanitizeConfigYaml(yaml);
-            this.rtspPort = RelaySettings.detectRtspPort(this.yaml);
-        }
-
-        RelayConfig(String yaml, int rtspPort) {
-            this.yaml = RelaySettings.sanitizeConfigYaml(yaml);
-            this.rtspPort = rtspPort;
         }
 
         static RelayConfig defaults() {
-            return new RelayConfig(RelaySettings.defaultConfig(), RelaySettings.DEFAULT_RTSP_PORT);
+            return new RelayConfig(RelaySettings.defaultConfig());
         }
 
         boolean sameAs(RelayConfig other) {
@@ -314,32 +288,6 @@ public final class MediaMtxService extends Service {
                 return false;
             }
             return yaml.equals(other.yaml);
-        }
-
-        static RelayConfig fromIntent(Context context, Intent intent) {
-            if (intent != null) {
-                String yaml = intent.getStringExtra(EXTRA_CONFIG_YAML);
-                if (yaml != null) {
-                    return new RelayConfig(yaml);
-                }
-
-                int rtspPort = RelaySettings.readRtspPort(context);
-                String sourceUrl = RelaySettings.readSourceUrl(context);
-                boolean tcpOnly = RelaySettings.readTcpOnly(context);
-                rtspPort = intent.getIntExtra(EXTRA_RTSP_PORT, rtspPort);
-                if (intent.hasExtra(EXTRA_SOURCE_URL)) {
-                    sourceUrl = RelaySettings.sanitizeSourceUrl(intent.getStringExtra(EXTRA_SOURCE_URL));
-                }
-                tcpOnly = intent.getBooleanExtra(EXTRA_TCP_ONLY, tcpOnly);
-                if (intent.hasExtra(EXTRA_RTSP_PORT)
-                        || intent.hasExtra(EXTRA_SOURCE_URL)
-                        || intent.hasExtra(EXTRA_TCP_ONLY)) {
-                    String generatedYaml = RelaySettings.defaultConfig(rtspPort, sourceUrl, tcpOnly);
-                    return new RelayConfig(generatedYaml, RelaySettings.sanitizePort(rtspPort));
-                }
-            }
-
-            return new RelayConfig(RelaySettings.readConfigYaml(context));
         }
     }
 }

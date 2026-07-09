@@ -4,11 +4,8 @@
     <string name="notification_channel_name">MediaMTX relay</string>
     <string name="notification_channel_description">Keeps the RTSP relay process running</string>
     <string name="notification_title">Video relay running</string>
-    <string name="notification_stopped">Video relay stopped</string>
     <string name="notification_starting">Starting MediaMTX</string>
-    <string name="notification_running">RTSP relay active on port %1$d</string>
+    <string name="notification_running">MediaMTX is running</string>
     <string name="notification_failed">MediaMTX stopped after repeated failures</string>
-    <string name="notification_action_stop">Stop</string>
-    <string name="notification_action_restart">Restart</string>
     <string name="fgs_special_use_subtype">Runs a user-visible local media relay process for RTSP video forwarding between local network devices.</string>
 </resources>

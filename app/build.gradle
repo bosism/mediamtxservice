@@ -3,12 +3,12 @@ plugins {
 }
 
 android {
-    namespace "com.skydroid.mediamtxrelay"
+    namespace "com.bosism.mediamtxrelay"
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.skydroid.mediamtxrelay"
-        minSdk 24
+        applicationId "com.bosism.mediamtxrelay"
+        minSdk 26
         targetSdk 35
         versionCode 1
         versionName "0.1.0"

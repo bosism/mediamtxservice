@@ -1,7 +1,6 @@
-package com.skydroid.mediamtxrelay;
+package com.bosism.mediamtxrelay;
 
 import android.Manifest;
-import android.app.ActivityManager;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -19,7 +18,6 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int REQUEST_POST_NOTIFICATIONS = 1001;
@@ -81,8 +79,6 @@ public final class MainActivity extends Activity {
         if (command != null) {
             if ("stop".equalsIgnoreCase(command)) {
                 action = MediaMtxService.ACTION_STOP;
-            } else if ("restart".equalsIgnoreCase(command)) {
-                action = MediaMtxService.ACTION_RESTART;
             } else if ("start".equalsIgnoreCase(command)) {
                 action = MediaMtxService.ACTION_START;
             }
@@ -90,9 +86,6 @@ public final class MainActivity extends Activity {
 
         Intent serviceIntent = new Intent(this, MediaMtxService.class);
         serviceIntent.setAction(action);
-        if (source.getExtras() != null) {
-            serviceIntent.putExtras(source.getExtras());
-        }
         return serviceIntent;
     }
 
@@ -105,12 +98,7 @@ public final class MainActivity extends Activity {
             return true;
         }
         Bundle extras = intent.getExtras();
-        return extras != null && (
-                extras.containsKey(EXTRA_COMMAND)
-                        || extras.containsKey(MediaMtxService.EXTRA_RTSP_PORT)
-                        || extras.containsKey(MediaMtxService.EXTRA_SOURCE_URL)
-                        || extras.containsKey(MediaMtxService.EXTRA_TCP_ONLY)
-                        || extras.containsKey(MediaMtxService.EXTRA_CONFIG_YAML));
+        return extras != null && extras.containsKey(EXTRA_COMMAND);
     }
 
     private boolean needsNotificationPermission(Intent serviceIntent) {
@@ -139,19 +127,13 @@ public final class MainActivity extends Activity {
         String action = pendingServiceIntent.getAction();
         if (MediaMtxService.ACTION_STOP.equals(action)) {
             startService(pendingServiceIntent);
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(pendingServiceIntent);
         } else {
-            startService(pendingServiceIntent);
+            startForegroundService(pendingServiceIntent);
         }
 
         pendingServiceIntent = null;
         if (finishAfterDispatch) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                finishAndRemoveTask();
-            } else {
-                finish();
-            }
+            finishAndRemoveTask();
         } else {
             refreshStatus();
         }
@@ -206,11 +188,10 @@ public final class MainActivity extends Activity {
     }
 
     private void startFromUi() {
-        String yaml = saveYaml();
+        saveYaml();
 
         Intent intent = new Intent(this, MediaMtxService.class)
-                .setAction(MediaMtxService.ACTION_START)
-                .putExtra(MediaMtxService.EXTRA_CONFIG_YAML, yaml);
+                .setAction(MediaMtxService.ACTION_START);
 
         pendingServiceIntent = intent;
         finishAfterDispatch = false;
@@ -235,25 +216,8 @@ public final class MainActivity extends Activity {
         if (statusText == null || logText == null) {
             return;
         }
-        int port = RelaySettings.detectRtspPort(RelaySettings.readConfigYaml(this));
-        statusText.setText(isServiceRunning()
-                ? "Running on rtsp://<device-ip>:" + port
-                : "Stopped");
+        statusText.setText(RelaySettings.isRunning(this) ? "Running" : "Stopped");
         logText.setText(readLogPreview());
-    }
-
-    private boolean isServiceRunning() {
-        ActivityManager manager = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
-        if (manager == null) {
-            return false;
-        }
-        List<ActivityManager.RunningServiceInfo> services = manager.getRunningServices(Integer.MAX_VALUE);
-        for (ActivityManager.RunningServiceInfo service : services) {
-            if (MediaMtxService.class.getName().equals(service.service.getClassName())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private String readLogPreview() {
@@ -266,12 +230,21 @@ public final class MainActivity extends Activity {
             byte[] bytes = Files.readAllBytes(logFile.toPath());
             String text = new String(bytes, StandardCharsets.UTF_8);
             if (text.length() <= LOG_PREVIEW_CHARS) {
-                return text;
+                return newestFirst(text);
             }
-            return text.substring(text.length() - LOG_PREVIEW_CHARS);
+            return newestFirst(text.substring(text.length() - LOG_PREVIEW_CHARS));
         } catch (IOException e) {
             return "Unable to read log: " + e.getMessage();
         }
+    }
+
+    private String newestFirst(String text) {
+        String[] lines = text.trim().split("\\R");
+        StringBuilder builder = new StringBuilder(text.length());
+        for (int i = lines.length - 1; i >= 0; i--) {
+            builder.append(lines[i]).append('\n');
+        }
+        return builder.toString();
     }
 
     private TextView label(String value) {
